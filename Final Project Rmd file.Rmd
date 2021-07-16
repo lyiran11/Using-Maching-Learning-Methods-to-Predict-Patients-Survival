@@ -1,0 +1,524 @@
+
+---
+title: "Predicting the Survival of Patients Using Machine Learning"
+author: "Yi Cui, Yiran Li, and Zipei Zhu"
+header-includes:
+- \usepackage{amsgen,amsmath,amstext,amsbsy,amsopn,amssymb,mathabx,amsthm,bm,bbm}
+- \usepackage[labelsep=space]{caption}
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+subtitle: $\textbf{Machine Learning, Spring 2021}$
+---
+
+# 1 Introduction
+
+The goal of this research is to use a variety of machine learning methods to predict the survival of patients with heart failure based on their clinical, body, and lifestyle information. We also would like to find the best statistical models for our data set and identify the most important predictors in these models. Specifically, we use both unsupervised learaning (i.e., PCA and clustering) and supervised learning methods (i.e., KNN, logistic regressions, LASSO, and decision trees) on our data set.
+
+Consistent with the existing literature, we find that age, the level of serum creatinine in the blood, and the speed at which the blood running through the heart (i.e., ejection fraction) are the three most important predictors for the survival of patients with heart failure. In specific, younger patients, a lower level of serum creatine, and a higher level of ejection fraction are more likely to survive with heart failure. 
+
+```{r,warning=FALSE, message=FALSE, echo=FALSE}
+set.seed(315)
+# Load necessary packages
+library(ggplot2)
+library(tidyverse)
+library(RANN)
+library(reshape2)
+#install.packages("scatterplot3d")
+library("scatterplot3d")
+#install.packages("RANN")
+library(RANN)
+library(knitr)
+#install.packages("kableExtra")
+#library(kableExtra)
+#library(caret)
+library(class)
+library(ggrepel)
+library(ggfortify)
+library(factoextra)
+library(tidyr)
+library(dplyr)
+library(purrr)
+#install.packages("ggpubr")
+library(ggpubr)
+#library(e1071)
+#library(formatR)
+#install.packages("tree")
+library(tree)
+library(ISLR)
+```
+
+# 2 Data
+
+```{r,warning=FALSE, message=FALSE, echo= FALSE}
+## First, load the data
+heart_failure <- read.table("heart_failure_clinical_records_dataset.csv",header = TRUE, sep = ",", quote ="\"",dec = ".", fill = TRUE)
+```
+
+Heart failure is a type of cardiovascular disease that causes the death of approximately 17 million people worldwide annually. The Heart Failure Clinical Records Dataset^[https://archive.ics.uci.edu/ml/datasets/Heart+failure+clinical+records#] is one of the most important data sets at the frontiers of heart failure, and the data set was collected for conducting various clinical and biostatistical research. It contains the medical records of 299 patients collected at the Faisalabad Institute of Cardiology and at the Allied Hospital in Faisalabad, Pakistan, from April to December 2015. The patients consist of 105 women and 194 men with their ages ranging between 40 and 95 years old, and all 299 patients had heart failure during their follow-up period. There are 13 integer or real-valued features characterizing the clinical, body, and lifestyle information for each patient. Real-valued features include the test results for some clinical tests; Binary features consist of anemia3, high blood pressure, diabetes, sex, and smoking. A brief description of some selected features can be found in Table 1. This is a balanced data set with 299 sample, 13 features, and no missing values.
+
+```{r, warning=FALSE, message=FALSE, echo= FALSE, fig.align='center'}
+include_graphics("table1.png")
+```
+
+For the following sections, we use the original data set for exploratory data analysis because this way we could see the mean, variance, distributions, and other summary statistics of our interest more clearly. Instead, we standardize the non-bool variables when performing machine learning methods because different numerical features may have different means and variances such that they are not intuitively comparable with each other or not compatible with some statistical learning models.
+
+```{r, warning=FALSE, message=FALSE, echo= FALSE}
+# Then preprocess the data (grouping and scaling).
+## Separate the bool (binary) and the non-bool sub data sets:
+heart_failure_bool <- heart_failure[,c(2,4,6,10,11,13)]
+heart_failure_n_bool <- heart_failure[,c(1,3,5,7,8,9,12)]
+## Standardize the non-bool data. The scaled data set is scale_heart while the original data set is heart_failure.
+scale_heart_n_bool <- as.data.frame(scale(heart_failure_n_bool, center=T,scale=T))
+scale_heart <- cbind(scale_heart_n_bool,heart_failure_bool)
+```
+
+### 2.1 Exploratory Data Analysis (EDA)
+
+We are interested in the correlation between some predictors, such as age, serum_creatinine, and ejection_fraction, and DEATH_EVENT, the survival of patients, so we visualize their joint behaviors and calculate the correlation coefficients. We find that there is a weakly positive correlation between age and serum creatinine (i.e., 0.159), and the same is that between age and ejection fraction (i.e., 0.060). Instead, there is a relatively stronger and positive correlation between death and serum creatinine (i.e., 0.294). Also, the same is with that between death and ejection fraction whereas the correlation is negative (i.e., -0.269).
+
+```{r, warning=FALSE, message=FALSE, echo= FALSE}
+# Pick age and serum_creatinine
+# Compute correlation.
+a =ggplot(heart_failure) + 
+  geom_point(aes(heart_failure$age,serum_creatinine)) + xlab("Age") + 
+  ylab("Serum Creatinine") + 
+  ggtitle("Age and Serum Creatinine")
+b = ggplot(heart_failure) +
+geom_point(aes(age,ejection_fraction)) + xlab("Age") +
+ylab("Ejection Fraction") +
+ggtitle("Age and Ejection Fraction")
+
+c = ggplot(heart_failure) +
+geom_point(aes(heart_failure$DEATH_EVENT,serum_creatinine)) + xlab("Death") +
+ylab("Serum Creatinine") +
+ggtitle("Death and Serum Creatinine")
+
+d = ggplot(heart_failure) +
+geom_point(aes(DEATH_EVENT,ejection_fraction)) + xlab("Death") +
+ylab("Ejection Fraction") +
+ggtitle("Death and Ejection Fraction")
+
+ggarrange(a, b, c, d, 
+          ncol = 2, nrow = 2)
+```
+
+# 3 Learning Methods
+
+### 3.1 Principal Components Analysis
+
+We first try the unsupervised learning method, PCA, and we would like to know if we could find a low-dimensional representation of the observations. PCA projects the original high-dimensional data onto a low-dimensional space and make its variance as large as possible. If the value of a certain feature (a column of the matrix) of the data is particularly large, then it has a large proportion of the entire error calculation. Because we don't know the importance of each feature before modeling, this is likely to lead to a large amount of information missing. For the sake of "fairness" and to prevent over-capturing certain features with large values, we will first standardize each feature so that their sizes are within the same range, and then perform PCA. From a computational point of view, another benefit of standardization before PCA is that this is beneficial to the gradient descent method of convergence. Because PCA is usually numerically approximated decomposition, rather than seeking eigenvalues, singular values to obtain analytical solutions, when we use gradient descent and other algorithms for PCA, we have to standardize the data first.
+
+We run PCA on the data set, provide a numerical summary of the first 5 PCs, and plot a screeplot of the PCs.
+
+```{r, warning=FALSE, message=FALSE, echo= FALSE}
+# Run PCA.
+# scale = TRUE
+# Run principal components analysis
+pcs = prcomp(scale_heart[,1:12])
+subtype = scale_heart$DEATH_EVENT
+
+# Summarize the pcs
+pcs_result <- summary(pcs$x[,1:6])
+```
+
+```{r, warning=FALSE, message=FALSE, echo= FALSE}
+# Plot screeplot.
+library("factoextra")
+fviz_eig(pcs, addlabels = TRUE, ylim = c(0, 50))
+
+# look at the eigenvalues which measure the amount of variation retained by each principal component.
+eig.val = get_eigenvalue(pcs)
+
+pr.var <- pcs$sdev^2
+pve <- pr.var / sum(pr.var)
+plot(cumsum(pve), xlab = "Principal Component",
+ylab = "Cumulative Proportion of Variance Explained",
+ylim = c(0, 1), type = "b")
+```
+
+We find that seven principal components are required to explain at least 80% of the variation in the data, which is more than half of the PCs; and PC1’s variance percentage is only 18.57%, which is not really high. Based on this and the plot, it doesn’t seem like PCA has done a good job in reducing the dimensionality of the data.
+
+```{r, warning=FALSE, message=FALSE, echo= FALSE}
+# Partition the image space into a 2 x 2 grid
+par(mfrow = c(2,2))
+
+colors <- ifelse(subtype == 0, "blue","red")
+
+
+# Plot first 4 PCs. Here red means the patient is dead and blue means the patient has survived
+for(i in 1:4){
+  plot(pcs$x[,i], 
+      main = paste("PC", eval(i)), 
+      xlab = "Sample Index",
+      ylab = paste("PC", eval(i), "score"), 
+      col = colors)
+}
+
+
+```
+
+
+
+```{r, warning=FALSE, message=FALSE, echo= FALSE}
+# Plot first 3 PCs against one another.
+#biplot(pcs)
+#pairs(pcs$x, col = subtype)
+#pcs$x
+pairs(pcs$x[,1:3], col = colors)
+```
+
+Plotting the PCs separately, there doesn't seem to have any apparent clusters. All clusters seem to overlap on each other. However, After controlling for PC2 and PC3, dead patients in red seem to have lower PC1 than the patients alive. But there does not seem to be any clustering depending the levels of PC2 and PC3.
+
+
+### 3.2 Clustering
+
+Next, we perform a cluster analysis on the data. 
+
+We are interested in partitioning around medioids, self organizing maps. Intuitively, it means we could use K-means algorithm to classify the data into several different groups. Clustering is a method of unsupervised learning and the objects being clustered of course are the data points. It is quite useful for this data set because many features are binary so we just need to cluster the data points based on a limited number of features.
+
+```{r, warning=FALSE, message=FALSE, echo= FALSE}
+# function to compute total within-cluster sum of square
+
+wss <- function(k) {
+  kmeans(scale_heart, k, nstart = 10 )$tot.withinss
+}
+
+# Compute and plot wss for k = 1 to k = 15
+k.values <- 1:15
+
+# extract wss for 2-15 clusters
+wss_values <- map_dbl(k.values, wss)
+
+plot(k.values, wss_values,
+       type="b", pch = 19, frame = FALSE, 
+       xlab="Number of clusters K",
+       ylab="Total within-clusters sum of squares")
+
+#seems like 2 clusters is quite nice here because of the "elbow" we see in the plot at number of clusters=2
+
+fviz_nbclust(scale_heart, kmeans, method = "silhouette")
+
+#one other method of confirming that 2 clusters is optimal in this situation
+
+#source for above code/package: https://uc-r.github.io/kmeans_clustering
+
+# Apply the clustering algorithm.
+invisible(fit_kmeans <- kmeans(scale_heart,2))
+
+#barplot(t(fit_kmeans$centers),beside = T,xlab = "cluster",ylab="value")
+#plot(scale_TCGA,col=fit_kmeans$cluster)
+
+autoplot(kmeans(scale_heart, 2),data=scale_heart,label=TRUE, label.size=2, frame=TRUE)
+# Here we are using PCs to visualize something that is high dimensional, that is to say, we did not apply the clustering algorithm to our first few PCs, but rather did kmeans clustering first and then, to visualize the data, used PCs.
+
+
+```
+
+
+```{r,warning=FALSE, message=FALSE, echo= FALSE}
+k <- kmeans(scale_heart, 2, nstart=10)
+fviz_cluster(k, data=scale_heart, geom="point") + geom_text_repel(aes(label=scale_heart$DEATH_EVENT),max.overlaps=10) +
+theme_minimal()
+# We can see here that the clustering algorithm divided the data into two distinct clusters with cluster 1 being composed of mainly 1s with some 0s along the boundaries, and cluster 2 being mostly composed of 1s. Therefore, it seems safe to say that both clusters are relatively homogeneous.
+
+#However, we can back our statement further with computation. Let's figure out how many data points in each cluster are 1s and 0s.
+df <- data.frame(class=scale_heart[,13], cluster=k$cluster)
+
+#grouping by cluster and class and then counting how many data points fall into each group
+df %>%
+  group_by(cluster, class) %>%
+  summarise(n = n())
+
+#We can see here that cluster 1 is entirely homogeneous with only Normal whereas cluster 2 is relatively homogeneous (122 Basal, 6 Normal) with Basal.
+```
+
+We can see that the clustering algorithm divided the data into two distinct clusters with cluster 1 being composed of mainly 1s (i.e., 1 stands for the dead patients, and 0 for survived patients) with some 0s along the boundaries, and cluster 2 being mostly composed of 1s. Therefore, it seems safe to say that both clusters are relatively homogeneous.Next, we figure out how many data points in each cluster are 1s and 0s. We find that that both two clusters are entirely homogeneous with very few misclassified data points.
+
+### 3.3 Classification
+
+Classification is simply the process in which one decides which class a new data point may fall into. A single object in the case of our dataset, is the set of survival results which are classified as either "0" or "1". The variable that would be most interesting to predict is the "DEATH_EVENT" variable. This variable is either "0" or "1" in our dataset, indicating whether a patient has survived or not in their follow-up period. As stated before, predicting this variable can predict which subtype a set of measurements corresponds to results. For doing cross-validation in all classification methods in this section, we randomly break our data set into a training set (roughly 80% of the data) and a test set (roughly 20% of the data); ); while doing the 10-fold cross-validation, we randomly partition the data into 10 equal size subsamples, of the 10 subsamples, a single subsample is retained as the validation data for testing the model, and the remaining 9 subsamples are used as training data.
+
+```{r,warning=FALSE, message=FALSE, echo= FALSE}
+# Break into train and test sets.
+## Set the training data and validate data(The whole sample data is TCGA_data)
+train <- sample(nrow(scale_heart), 0.8*nrow(scale_heart))
+scale_heart_train <- scale_heart[train,]
+scale_heart_validate <- scale_heart[-train,]
+
+## Then our analysis will be based on the training data
+# The point of doing this before classification is because we will base our classification of our test set based on the training set. We can use the test set to understand the strength of our classification method.
+```
+
+#### 3.3.1 K Nearest Neighbors
+
+Then we apply the supervised learning method k-nearest neighbor (kNN) on our dataset. We choose kNN because of its easy of interpretation and low calculation time. Also, with the optimal k value, we can easily make a boundary of the two classes (dead or survived) that clearly segregates them from each other.
+
+```{r,warning=FALSE, message=FALSE, echo= FALSE}
+# Construct table.
+invisible(df)
+
+# The following table describes how many observation of each class fall into the clusters in the previous analysis. Cluster 1 seems to be mostly comprised of dead patients while Cluster 2 seems to be mostly comprised of data with patients that are alive.
+df %>%
+  group_by(cluster, class) %>%
+  summarise(n = n())
+```
+
+
+```{r,warning=FALSE, message=FALSE, echo= FALSE}
+set.seed (1)
+iter <- 20  #iteration of K
+scale_heart.knn = scale_heart[,-13] # separate the respond variable
+scale_heart.Y = scale_heart[,13]
+
+n = nrow(scale_heart.knn)
+times =rep(1:10,c(0.1*n,0.1*n,0.1*n,0.1*n,0.1*n,0.1*n,0.1*n,0.1*n,0.1*n,0.1*n))
+ntimes = length(times)
+sets = sample(times)
+all_knn_cv = cbind()
+
+for (i in 1:10) {
+  cv_test = scale_heart.knn[sets==i,]
+  cv_train = scale_heart.knn[sets!=i,]
+  Y_train = scale_heart.Y[sets!=i]
+  Y_test = scale_heart.Y[sets==i]
+
+  # Compute training set accuracy.
+ errs <- vapply(seq_len(iter), function(x){
+    k <- knn(cv_train, cv_train, Y_train, k = x)
+   sum(k != Y_train) / length(k)
+  }, numeric(1))
+
+  all_knn_cv = cbind(all_knn_cv,errs)  
+}
+
+mean_err = c()
+for (i in 1:20){
+  mean_err = c(mean_err, mean(all_knn_cv[i,]))
+}
+
+df <- data.frame(k = seq_len(iter), accuracy = 1-mean_err)
+
+# The following plot shows the accuracy of the fitted model on the training set for for given values of k in the kNN algorithm.
+
+#ggplot(data = df, aes(x = k, y = accuracy)) + geom_line(stat = "identity") + ggtitle(paste("Accuracy of Training Set using kNN value of k=1 to", iter)) + xlim(1, iter)
+```
+
+```{r,warning=FALSE, message=FALSE, echo= FALSE}
+set.seed (1)
+# Compute accuracy on test set.
+all_knn_cv_test = cbind()
+for (i in 1:10) {
+  cv_test = scale_heart.knn[sets==i,]
+  cv_train = scale_heart.knn[sets!=i,]
+  Y_train = scale_heart.Y[sets!=i]
+  Y_test = scale_heart.Y[sets==i]
+
+  # Compute training set accuracy.
+ errs <- vapply(seq_len(iter), function(x){
+    k <- knn(cv_train, cv_test, Y_train, k = x)
+   sum(k != Y_test) / length(k)
+  }, numeric(1))
+
+  all_knn_cv_test = cbind(all_knn_cv_test,errs)  
+}
+
+mean_err_test = c()
+for (i in 1:20){
+  mean_err_test = c(mean_err_test, mean(all_knn_cv_test[i,]))
+}
+
+df_test <- data.frame(k = seq_len(iter), accuracy = 1-mean_err_test)
+
+#ggplot(data = df_test, aes(x = k, y = accuracy)) + geom_line(stat = "identity") + ggtitle(paste("Accuracy of Test Set using KNN value of k=1 to", iter)) + xlim(1, iter)
+```
+```{r, warning=FALSE, message=FALSE, echo= FALSE}
+# Then we put the accuracy of training set and testing set in one graph, with accuracy of each test with different values of k on the y axis. From the result we can see that when k = 3, 4, 5, the accuracy for testing set are relatively high.
+ggplot() + 
+  geom_line(data = df, stat = "identity", aes(x=k,y=accuracy,color="training")) + 
+  geom_line(data = df_test, stat = "identity", aes(x=k,y=accuracy,color="testing"))+
+  scale_colour_manual("", 
+                      breaks = c("training", "testing"),
+                      values = c("blue","red"))+
+  ggtitle("Accuracy of Training Set vs. Testing Set using KNN value of k=1 to 20") + 
+  xlim(1, iter)
+```
+
+From the plot we could see that the accuracy reaches its first maxima when k = 4. Since we want k to be an odd number to avoid even vote, we segregate the training and validation from the initial dataset, apply 10-fold cross-validation on k = 3 and k = 5, plot the validation accuracy for each, and calculate the average accuracy. 
+
+```{r, warning=FALSE, message=FALSE, echo= FALSE}
+# We then apply the cross-validation on the kNN model with k = 3, 5 respectively, to further test the accuracy of each model with different k values, and find the optimal k.
+
+all_knn5_accuracy = c()
+all_knn3_accuracy = c()
+
+# do the cross-validation on k=5 and plot the test accuracy
+for (i in 1:10) {
+  cv_test = scale_heart.knn[sets==i,]
+  cv_train = scale_heart.knn[sets!=i,]
+  Y_train = scale_heart.Y[sets!=i]
+  Y_test = scale_heart.Y[sets==i]
+
+  # Compute validate set accuracy.
+  knn5_test = knn(train=cv_train, test=cv_test, cl=Y_train, k = 5)
+  knn5_accuracy = sum(Y_test == knn5_test)/length(knn5_test)
+  all_knn5_accuracy = c(all_knn5_accuracy, knn5_accuracy)
+}
+ggplot() + geom_line(aes(x = seq(1,10), y = all_knn5_accuracy)) +xlab("iteration") + ylab("accuracy")+ ggtitle("Accuracy of Test Set using KNN value of k=5") 
+# Calculate the mean accuracy
+mean(all_knn5_accuracy)
+
+# do the cross-validation on k=3 and plot the test accuracy
+for (i in 1:10) {
+  cv_test = scale_heart.knn[sets==i,]
+  cv_train = scale_heart.knn[sets!=i,]
+  Y_train = scale_heart.Y[sets!=i]
+  Y_test = scale_heart.Y[sets==i]
+
+  # Compute validate set accuracy.
+ knn3_test = knn(train=cv_train, test=cv_test, cl=Y_train, k = 3)
+knn3_accuracy = sum(Y_test == knn3_test)/length(knn3_test)
+all_knn3_accuracy = c(all_knn3_accuracy, knn3_accuracy)
+}
+ggplot() + geom_line(aes(x = seq(1,10), y = all_knn3_accuracy)) +xlab("iteration") + ylab("accuracy")+ ggtitle("Accuracy of Test Set using KNN value of k=3") 
+# Calculate the mean accuracy
+mean(all_knn3_accuracy)
+
+# Notice that when k=5, the accuracy of the kNN model is the highest, with the accuracy about 0.78.
+```
+
+From the calculated result, the optimal k value is 5 with the accuracy of 0.7753. This value of k should be used for all predictions.
+
+#### 3.3.2 The Logistic Regression and LASSO
+
+Since our predict target is a binary variable, and one of our goal is to find out which features are significant for the prediction, we then apply the logistic regression on our data set. Logistic regression model is easy to interpret, and all variables are in there, so we consider it as our baseline.
+
+```{r, warning=FALSE, message=FALSE, echo= FALSE}
+#cor(scale_heart[,-13])
+scale_heart.logi = scale_heart[,-7] 
+# We remove the variable "time", which is the follow-up period (measured in days) because we prefer to focus on the clinical features and to try to discover something meaningful about them.
+
+logi.heart = glm(DEATH_EVENT~., data = scale_heart.logi, family = binomial, subset = train)
+summary(logi.heart)
+
+# now test the accuracy
+logi.heart.pred = predict(logi.heart, scale_heart.logi[-train,],type="response")
+logi.heart.pred.cont = ifelse(logi.heart.pred >= 0.5, 1, 0)
+logi.accuracy = sum(logi.heart.pred.cont == scale_heart.logi[-train,]$DEATH_EVENT)/length(logi.heart.pred.cont)
+logi.accuracy 
+# the accuracy doesn't seem to be quite high, but as least we found the top 3 most significant predictors
+```
+From the summary of results, we know that age, ejection fraction and serum creatinine are the top three significant predictors with large magnitude relative to the other predictors for a patient's survival. We cannot control a patient’s age, but we are able to give clinical control over the level of ejection fraction and serum creatinine in a patient's blood. Judging from the signs of their coefficients, we know that low level of serum creatinine (-) in the blood and high percentage of ejection fraction (+)  would increase the log-odds of the survival of a patient, which might be helpful for clinical research. Though not perfect, the accuracy of 0.65 is good enough for a baseline model, and we are likely to have found the three most important predictors.
+
+
+```{r,warning=FALSE, message=FALSE, echo= FALSE}
+library(glmnet)
+set.seed (1)
+scale_heart.lasso = scale_heart[,-7] 
+# remove the variable "time", which is the follow-up period (measured in days) because we prefer to focus on the clinical features and to try to discover something meaningful about them.
+
+train = sample(nrow(scale_heart.lasso), 0.8*nrow(scale_heart.lasso))
+Y = heart_failure$DEATH_EVENT
+
+
+# Build the LASSO regression model
+lasso.heart = glmnet(as.matrix(scale_heart.lasso[train,-12]), Y[train], alpha=1)
+# We can see from the coefficient plot that depending on the choice of tuning parameter, some of the coefficients will be exactly equal to zero.
+
+# Perform cross-validation and find the best lambda
+cv.lasso.heart = cv.glmnet(as.matrix(scale_heart.lasso[train,-12]), Y[train], alpha=1)
+plot(cv.lasso.heart) 
+# from the plot we can see that the lambda that minimizes the Mean-Squared Error is when log(λ) is close to -3.55
+bestlambda = cv.lasso.heart$lambda.min
+bestlambda
+
+# Calculate the associated test error
+lasso.predict = predict(lasso.heart, s = bestlambda, newx = as.matrix(scale_heart.lasso[-train,-12]))
+mean((lasso.predict - scale_heart.lasso[-train,]$DEATH_EVENT)^2) # the associated test error
+# We find that the associated test error is only 0.19, which is really low.
+
+# Estimate the coefficient
+lasso.best = glmnet(as.matrix(scale_heart.lasso[,-12]), Y,alpha=1, lambda = bestlambda)
+coef(lasso.best)
+
+```
+
+Next, we use Least Absolute Shrinkage and Selection Operator (LASSO) to help us select the most important features to better predict the survival of patients in a linear setting. We find that only six variables with high statistical significance and large magnitude are left after the model's selection: age, creatinine_phosphokinase, ejection_fraction, serum_creatinine, serum_sodium, and high_blood_pressure. Among them, the coefficients of age, ejection_fraction, and serum_creatinine have the largest magnitude. This result validates what we have discovered from the baseline.
+
+
+#### 3.3.3 Decision Trees
+
+The final classification method we use is decision trees, because it is a white box model that is easy to understand and interpret. Also, it can potentially judge our previous results. We fit the whole data set on the basic tree, do cross-validation, and finally create a pruned tree to improve the performance.
+
+```{r, warning=FALSE, message=FALSE, echo= FALSE}
+# Fit a classification tree to predict DEATH_EVENT using all variables but DEATH_EVENT and time in scale_heart.
+attach(scale_heart)
+death = factor(scale_heart$DEATH_EVENT, c(1,0), labels = c(1,0))
+sex_b = factor(scale_heart$sex, c(1,0), c(1,0))
+#death = ifelse(DEATH_EVENT > 0.5, "Yes","No")
+#sex_b = ifelse(sex > 0.5, "Male", "Female")
+scale_heart_temp = data.frame(scale_heart, death, sex_b)
+tree.heart = tree(death~.-DEATH_EVENT-time-sex, scale_heart_temp)
+# Show the internal nodes, the number of terminal nodes, and the training error of the tree.
+summary(tree.heart)
+
+
+plot(tree.heart,  uniform=TRUE,
+   main="Classification Tree for the death of patients")
+text(tree.heart, use.n=TRUE, all=TRUE, cex=.8, petty = 0)
+# Display the split criterion, overall prediction of each branch, etc.
+#tree.heart
+
+# Do cross validation by splitting the data set into a training set and a test set.
+set.seed(2)
+train = sample(1:nrow(scale_heart_temp), 239)
+heart.test = scale_heart_temp[-train,]
+death.test = scale_heart_temp[-train, 14]
+tree.heart.train = tree(death~.-DEATH_EVENT-time-sex, scale_heart_temp, subset = train)
+tree.predict = predict(tree.heart.train, heart.test, type = "class")
+table(tree.predict, death.test)
+
+```
+Consider the error on the whole data set. There are five variables actually used as internal nodes in the tree: serum_creatinine, ejection_fraction, age, serum_sodium, creatinine_phosphokinase. Plus, there are eleven terminal nodes. The split criterion, the number of observations, the deviance, and the overall prediction in that branch (between 1 and 0) are also shown above. Overall, the training error rate is 17.73%. This relatively small deviance indicates a tree that provides a good fit to the training data. 
+
+From the graph, we find that the most important feature is serum_creatinine since the first branch differetiates the level of serum creatine in the patient's blood using a threshold of 0.407. Plus, this feature is used once again in the following internal nodes. The other most important feature seems to be ejection_fraction, which is used three times in the following internal nodes.
+
+In order to properly evaluate the performance of this classification tree on the data, we must estimate the test error rather than simply computing the training error. Hence, we split our data into a training set and a test set. This approach, leads to correct predictions for around 75% of the data points in the test data set.
+
+```{r, warning=FALSE, message=FALSE, echo= FALSE}
+# Prunning
+set.seed(3)
+cv.heart = cv.tree(tree.heart, FUN = prune.misclass)
+names(cv.heart)
+cv.heart
+par(mfrow=c(1,2))
+plot(cv.heart$size, cv.heart$dev, type = "b")
+plot(cv.heart$k, cv.heart$dev, type = "b")
+
+prune.heart = prune.misclass(tree.heart, best = 6)
+plot(prune.heart)
+text(prune.heart, pretty = 0)
+
+tree.heart.pred = predict(prune.heart, heart.test, type = "class")
+table(tree.heart.pred, death.test)
+```
+
+Finally, we consider whether pruning the tree might lead to improved results. To start off, we perform cross-validation in order to determine the optimal level of tree complexity, and we do cost complexity pruning to select a sequence of trees for consideration. From the plot, we observe that the tree with 6 terminal nodes has the lowest cross-validation error rate, with 77 cross-validation errors. Next, we prune the tree to obtain the six-node tree. We find that now 80% of the observations are correctly classified, and there are only four predictors remained in our pruned tree: serum_creatinine, ejection fraction, serum sodium, and age. This resulting pruned tree also validates our base-line result that regards serum_creatinine and ejection fraction as two most important predictors. To sum up, the pruning process produces a more interpretable tree, and it also improves the classification accuracy.
+
+
+# Conclusion (for Federalist Papers Date Set)
+
+We perform both unsupervised and unsupervised learning methods on the Heart Failure Clinical Records Dataset with 299 samples and 13 variables to predict the survival of patients with heart failures based on their clinical, body, and lifestyle information. 
+
+Since our data set is not very highly dimensional, PCA does not yield good results as expected since it is most powerful in reducing the dimensionality of data. However, K-means clustering does a great job in separating the data into two clusters with distinct values of our target variables, DEATH_EVENT. Similarly, exploratory data analysis (EDA) by looking at correlation between some predictors and our target is also helpful. Results from both clustering and EDA suggest that patients with heart failures that survived may have very different characteristics from those that are dead from the disease. Hence, it would be promising to further use supervised methods to predict their survival based on their attributes. 
+
+Due to the binary nature of patients' survival, naturally, we use the logistic regression as our baseline model. With a good accuracy of 0.65, our baseline shows that the most important predictors are age, serum creatinine, and ejection fraction, because their coefficients are the most statistically significant with the largest magnitude. The results of LASSO validate this prediction as the three variables are also the most important predictors among all six predictors after the model's selection. We also try k-nearest neighbors since this model is easy to interpret and simple to compute, though we can not directly infer the relative importance of patients' attributes. Using 10-fold cross-validation, we find k equal to 5 to be the optimal choice of the number of the nearest neighbors with a high accuracy around 0.78.
+
+The final method we use is decision trees because it is a white box model that is easy to understand and interpret. The baseline tree model gives a great training accuracy of 0.83 and indicates that serum creatine and ejection fraction are two most important predictor for our target, consistent with our previous results. Plus, the cross validation yields a 0.75 accuracy on the test data set. Also, we try pruning the tree in order to improve the preceding results. We find that the tree with six nodes has the lowest cross-validation error rate. As a result, the test error rate increases from 0.75 to 0.80, and the tree is tuned such that it is more obvious to see the three most important predictors mentioned above.
+
+To conclude, both EDA and our classification methods shows that the most two important predictors for patients' survival are serum creatinine and ejection fraction. It might be helpful for doctors to reduce the level of serum creatine in the patient's blood and boost the velocity of bloodstream in the patient's heart by some clinical treatment to increase his or her survival rate. Our research can be further extended to using other machine learning methods, such as support vector machines or Naive Bayes. Though Naive Bayes is not recommendable because of its far-reaching independence assumption, which is unrealistic for our data, SVMs could be worth trying in order to get better results in the future. 
+
+
+
+
