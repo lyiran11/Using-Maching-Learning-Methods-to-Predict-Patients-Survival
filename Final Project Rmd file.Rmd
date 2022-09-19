@@ -1,6 +1,6 @@
 
 ---
-title: "Predicting the Survival of Patients Using Machine Learning"
+title: "Predicting the Survival of Patients with Heart Failure"
 author: "Yi Cui, Yiran Li, and Zipei Zhu"
 header-includes:
 - \usepackage{amsgen,amsmath,amstext,amsbsy,amsopn,amssymb,mathabx,amsthm,bm,bbm}
@@ -9,7 +9,7 @@ output:
   html_document: default
   pdf_document: default
   word_document: default
-subtitle: $\textbf{Machine Learning, Spring 2021}$
+subtitle: $\textbf{UNC Research}$
 ---
 
 # 1 Introduction
